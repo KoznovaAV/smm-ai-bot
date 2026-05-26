@@ -1,7 +1,6 @@
 import os
 import random
-import json
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from vk_api import VkApi
 from dotenv import load_dotenv
 
@@ -38,12 +37,11 @@ async def webhook(request: Request):
         
         print(f"\n{'='*50}")
         print(f"📩 ПОЛУЧЕНО СОБЫТИЕ: {event_type}")
-        print(f"📦 Полные данные: {json.dumps(data, indent=2, ensure_ascii=False)}")
         print(f"{'='*50}\n")
 
         if event_type == "confirmation":
             print(f"✅ Отправляю подтверждение: '{CONFIRMATION_CODE}'")
-            return CONFIRMATION_CODE
+            return Response(content=CONFIRMATION_CODE, media_type="text/plain")
 
         if event_type == "message_new":
             print("📨 Обработка нового сообщения...")
@@ -65,11 +63,9 @@ async def webhook(request: Request):
         import traceback
         traceback.print_exc()
 
-    return "ok"
+    return Response(content="ok", media_type="text/plain")
 
 if __name__ == "__main__":
     import uvicorn
     print("\n🚀 ЗАПУСК СЕРВЕРА...")
-    print("📡 Слушаю http://0.0.0.0:8000")
-    print("⏳ Жду события от VK...\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)
