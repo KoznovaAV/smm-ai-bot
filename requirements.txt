@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+vk-api
+python-dotenv
