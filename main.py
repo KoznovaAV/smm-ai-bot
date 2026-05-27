@@ -8,6 +8,9 @@ from groq import Groq
 
 load_dotenv()
 
+print(f"🔍 DEBUG: GROQ_API_KEY загружен = {'ДА' if os.getenv('GROQ_API_KEY') else 'НЕТ'}")
+print(f"🔍 DEBUG: GROQ_API_KEY (первые 10 симв) = '{os.getenv('GROQ_API_KEY', '')[:10]}'")
+
 app = FastAPI()
 TOKEN = os.getenv("VK_TOKEN")
 CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE")
