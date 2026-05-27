@@ -27,33 +27,29 @@ def get_main_keyboard():
         "one_time": False, "inline": False,
         "buttons": [
             [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": json.dumps({"cmd":"generate"})}, "color": "primary"}],
-            [{"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
-             {"action": {"type": "text", "label": "️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
+            [{"action": {"type": "text", "label": "#️ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
+             {"action": {"type": "text", "label": "⚙️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
             [{"action": {"type": "text", "label": "👑 Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
         ]
     })
 
 def get_settings_keyboard(settings):
-    # Вспомогательная функция для кнопок
     def btn(label, cmd, is_active=False):
+        # active = primary (синий), inactive = default (серый)
         return {
             "action": {"type": "text", "label": label, "payload": json.dumps({"cmd": cmd})},
             "color": "primary" if is_active else "default"
         }
 
-    # Прямой выбор (без циклов)
-    len_opts = [("🔹 Коротко", "set_len_short"), ("🔸 Средне", "set_len_medium"), ("🔺 Длинно", "set_len_long")]
+    # Прямой выбор параметров
+    len_opts = [(" Коротко", "set_len_short"), ("🔸 Средне", "set_len_medium"), ("🔺 Длинно", "set_len_long")]
     emoji_opts = [("😶 Без", "set_emoji_off"), ("✨ Мало", "set_emoji_minimal"), ("🎨 Норма", "set_emoji_normal"), ("🌈 Много", "set_emoji_rich")]
     style_opts = [(" Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), ("📋 Список", "set_style_list"), ("📖 История", "set_style_story"), ("⚖️ Баланс", "set_style_balanced")]
 
     rows = []
-    # Длина
     rows.append([btn(l, c, settings["length"] == c.split("_")[-1]) for l, c in len_opts])
-    # Эмодзи
     rows.append([btn(e, c, settings["emoji"] == c.split("_")[-1]) for e, c in emoji_opts])
-    # Стиль
     rows.append([btn(s, c, settings["style"] == c.split("_")[-1]) for s, c in style_opts])
-    # Выход
     rows.append([{"action": {"type": "text", "label": "🔙 В главное меню", "payload": json.dumps({"cmd": "back"})}, "color": "negative"}])
 
     return json.dumps({"one_time": False, "inline": False, "buttons": rows})
@@ -98,30 +94,32 @@ def build_system_prompt(topic, settings):
         "rich": "5-8 эмодзи, ярко, но без спама."
     }
 
-    return f"""Ты — senior SMM-копирайтер. Пишешь тексты для ВКонтакте.
+    return f"""Ты — senior SMM-редактор с безупречным русским языком. Пишешь тексты для ВКонтакте.
 ТЕМА: {topic}
 НАСТРОЙКИ: Стиль: {style_map[settings['style']]} | Объем: {len_map[settings['length']]} | Эмодзи: {emoji_map[settings['emoji']]}
 
- ЖЕСТКИЕ ЗАПРЕТЫ (AI-КЛИШЕ):
-1. НИКОГДА не используй: "В современном мире", "Стоит отметить", "Безусловно", "Является", "Данный текст", "Нельзя не упомянуть".
-2. НИКОГДА не используй Markdown (**, *, #, _). ВК его не понимает.
-3. Не пиши шаблонными фразами. Пиши как живой человек.
+ КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО:
+1. Английские слова или кальки (никаких "в themselves", "окей", "чек", "дедлайн").
+2. Грамматические ошибки: согласование падежей, окончаний, предлогов. Проверяй каждое предложение.
+3. Роботизированные клише: "В современном мире", "Стоит отметить", "Безусловно", "Является", "Данный текст", "Нельзя не упомянуть", "Силовая история".
+4. Повторы слов в соседних предложениях.
+5. Нелогичные или машинные заголовки.
 
-✅ ПРАВИЛА РУССКОГО КОПИРАЙТИНГА:
-1. Грамматика и пунктуация: 100% проверка. Согласование падежей обязательно.
-2. Активный залог вместо пассивного. ("Мы сделали" вместо "Было сделано").
-3. Короткие предложения (10-15 слов). Длинное → разбей на два.
-4. ЗАГОЛОВКИ заглавными буквами. Пустая строка между абзацами.
-5. Списки через • или ✓.
-6. В конце: вопрос или призыв к действию.
+✅ ТРЕБУЕТСЯ:
+1. Живой русский язык, как у профессионального копирайтера.
+2. Активный залог вместо пассивного ("Мы сделали", а не "Было сделано").
+3. Чередуй короткие (8-12 слов) и средние предложения. Избегай "простыней".
+4. ЗАГОЛОВКИ только ЗАГЛАВНЫМИ буквами. Пустая строка между абзацами.
+5. Списки оформляй через • или ✓.
+6. В конце: живой вопрос или призыв к действию.
 
-Пример структуры:
+📌 ПРИМЕР ПРАВИЛЬНОЙ СТРУКТУРЫ:
 ЗАГОЛОВОК ТЕМЫ
 
-Вводный абзац, цепляющий внимание...
+Цепляющее введение без воды...
 
-• Пункт 1
-• Пункт 2
+• Тезис 1
+• Тезис 2
 
 Заключение и вопрос аудитории?"""
 
@@ -141,7 +139,7 @@ def generate_ai_response(prompt: str, system_role: str) -> str:
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "system", "content": system_role}, {"role": "user", "content": prompt}],
-            max_tokens=850, temperature=0.65  # Снижена для стабильности
+            max_tokens=850, temperature=0.5  # Снижена до 0.5 для строгой грамматики
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -164,10 +162,10 @@ async def process_user_action(peer_id, text, payload_str):
     if cmd == "generate":
         ctx["state"] = "waiting"
         s = ctx["settings"]
-        send_message(peer_id, f"📝 Напишите тему или запрос.\n\n⚙️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
+        send_message(peer_id, f" Напишите тему или запрос.\n\n️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
     elif cmd == "hashtags":
         ctx["state"] = "waiting_hash"
-        send_message(peer_id, "#️⃣ Тема для хэштегов:", get_main_keyboard())
+        send_message(peer_id, "#️ Тема для хэштегов:", get_main_keyboard())
     elif cmd == "premium":
         send_message(peer_id, "👑 Премиум в разработке. Скоро: аналитика, автопостинг, шаблоны.", get_main_keyboard())
     elif cmd == "settings":
@@ -177,14 +175,14 @@ async def process_user_action(peer_id, text, payload_str):
         ctx["state"] = "menu"
         send_message(peer_id, "🔙 Главное меню:", get_main_keyboard())
 
-    # Прямое изменение настроек (без циклов)
+    # Прямое изменение настроек
     elif cmd and cmd.startswith("set_"):
         parts = cmd.split("_")
         if len(parts) == 3:
             _, param, value = parts
             if param in ["len", "emoji", "style"]:
                 ctx["settings"][param] = value
-                send_message(peer_id, f"✅ Изменено: {param} → {value}", get_settings_keyboard(ctx["settings"]))
+                send_message(peer_id, f"✅ Применено: {param} → {value}", get_settings_keyboard(ctx["settings"]))
 
     # Текстовый ввод
     elif text:
