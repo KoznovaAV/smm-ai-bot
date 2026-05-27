@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import re
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from vk_api import VkApi
 from dotenv import load_dotenv
@@ -16,265 +17,204 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 vk = VkApi(token=TOKEN)
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-user_states = {}
+# Хранилище контекста пользователей
+user_context = {}
+DEFAULT_SETTINGS = {"style": "balanced", "length": "medium", "emoji": "normal"}
 
-def get_keyboard():
+def get_main_keyboard():
     return json.dumps({
-        "one_time": False,
-        "inline": False,
+        "one_time": False, "inline": False,
         "buttons": [
-            [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": "{\"cmd\":\"generate\"}"}, "color": "primary"},
-             {"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": "{\"cmd\":\"hashtags\"}"}, "color": "secondary"}],
+            [{"action": {"type": "text", "label": " Сгенерировать пост", "payload": "{\"cmd\":\"generate\"}"}, "color": "primary"}],
+            [{"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": "{\"cmd\":\"hashtags\"}"}, "color": "secondary"},
+             {"action": {"type": "text", "label": "⚙️ Настройки", "payload": "{\"cmd\":\"settings\"}"}, "color": "default"}],
             [{"action": {"type": "text", "label": "👑 Премиум", "payload": "{\"cmd\":\"premium\"}"}, "color": "positive"}]
         ]
     })
 
+def get_settings_keyboard(settings):
+    style_map = {"balanced": "️ Баланс", "strict": " Строго", "casual": "😊 Легко", "list": "📋 Список", "story": "📖 История"}
+    len_map = {"short": "🔹 Коротко", "medium": "🔸 Средне", "long": "🔺 Подробно"}
+    emoji_map = {"off": "😶 Без", "minimal": "✨ Мало", "normal": "🎨 Норма", "rich": "🌈 Много"}
+    
+    return json.dumps({
+        "one_time": False, "inline": False,
+        "buttons": [
+            [{"action": {"type": "text", "label": len_map.get(settings["length"], " Средне"), "payload": "{\"cmd\":\"len_next\"}"}, "color": "primary"},
+             {"action": {"type": "text", "label": emoji_map.get(settings["emoji"], "🎨 Норма"), "payload": "{\"cmd\":\"emoji_next\"}"}, "color": "positive"}],
+            [{"action": {"type": "text", "label": style_map.get(settings["style"], "⚖️ Баланс"), "payload": "{\"cmd\":\"style_next\"}"}, "color": "secondary"},
+             {"action": {"type": "text", "label": "🔄 Сброс", "payload": "{\"cmd\":\"reset\"}"}, "color": "default"}],
+            [{"action": {"type": "text", "label": " В меню", "payload": "{\"cmd\":\"back\"}"}, "color": "default"}]
+        ]
+    })
+
+def clean_vk_text(text: str) -> str:
+    """Полная очистка от Markdown для ВКонтакте"""
+    if not text: return ""
+    # Удаляем жирный/курсив/код
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    # Удаляем заголовки и цитаты
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
+    # Чистим остаточные символы
+    text = text.replace('**', '').replace('__', '')
+    # Нормализуем переносы и пробелы
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r' +', ' ', text)
+    return text.strip()
+
+def build_system_prompt(topic, settings):
+    style_map = {
+        "balanced": "Профессиональный, сбалансированный тон.",
+        "strict": "Деловой, сухой, фактологичный стиль. Без эмоций.",
+        "casual": "Легкий, дружеский, с элементами юмора.",
+        "list": "Четкая структура, списки, пункты.",
+        "story": "Повествовательный, вовлекающий сторителлинг."
+    }
+    len_map = {
+        "short": "Коротко: до 300 символов. Только суть.",
+        "medium": "Средне: 400-600 символов. Оптимально для ленты ВК.",
+        "long": "Подробно: до 1000 символов. Глубокое погружение."
+    }
+    emoji_map = {
+        "off": "Без эмодзи.",
+        "minimal": "Минимум эмодзи (1-2 шт в заголовке).",
+        "normal": "Умеренно (3-5 шт, как акценты).",
+        "rich": "Ярко (5-8 шт, но без спама)."
+    }
+
+    return f"""Ты — эксперт по контенту для ВКонтакте. Твоя задача — написать готовый к публикации пост.
+
+ТЕМА: {topic}
+
+НАСТРОЙКИ:
+- Стиль: {style_map.get(settings['style'], '')}
+- Объем: {len_map.get(settings['length'], '')}
+- Эмодзи: {emoji_map.get(settings['emoji'], '')}
+
+🚫 ЖЕСТКИЕ ПРАВИЛА ФОРМАТИРОВАНИЯ (ВК НЕ ПОДДЕРЖИВАЕТ MARKDOWN):
+1. ЗАПРЕЩЕНО использовать **, *, #, _, `, >. Они испортят текст.
+2. ЗАГОЛОВКИ пиши ЗАГЛАВНЫМИ БУКВАМИ (например: ИСТОРИЯ КОФЕ).
+3. Списки оформляй через • или ✓ или —.
+4. Обязательно делай пустую строку между абзацами для «воздуха».
+5. Пиши грамотно, живо и естественно.
+6. В конце обязательно задай вопрос аудитории или призови к действию.
+
+Пример идеальной структуры:
+ЗАГОЛОВОК ПОСТА
+
+Вводный абзац, цепляющий внимание...
+
+• Пункт 1
+• Пункт 2
+
+Заключительная мысль и вопрос к читателям?"""
+
 def send_message(peer_id: int, text: str, keyboard=None):
     try:
-        params = {"peer_id": peer_id, "message": text, "random_id": random.randint(1, 10**9)}
-        if keyboard:
-            params["keyboard"] = keyboard
+        clean_text = clean_vk_text(text)
+        params = {"peer_id": peer_id, "message": clean_text, "random_id": random.randint(1, 10**9)}
+        if keyboard: params["keyboard"] = keyboard
         vk.method("messages.send", params)
     except Exception as e:
         print(f"❌ Ошибка отправки: {e}")
 
-def generate_ai_response(user_prompt: str, system_role: str) -> str:
+def generate_ai_response(prompt: str, system_role: str) -> str:
     if not groq_client:
-        return "⚠️ AI-ключ не настроен."
-    
+        return "️ AI-ключ не настроен."
     try:
         response = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": system_role},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=800,
-            temperature=0.75
+            messages=[{"role": "system", "content": system_role}, {"role": "user", "content": prompt}],
+            max_tokens=900, temperature=0.75
         )
         return response.choices[0].message.content.strip()
-        
     except Exception as e:
         print(f"❌ Groq Error: {e}")
-        return f"⚠️ Нейросеть временно недоступна."
+        return f"⚠️ Ошибка нейросети. Попробуйте позже."
 
 async def process_user_action(peer_id, text, payload_str):
+    if peer_id not in user_context:
+        user_context[peer_id] = {"state": "menu", "settings": DEFAULT_SETTINGS.copy()}
+
+    ctx = user_context[peer_id]
     cmd = None
     if payload_str:
-        try:
-            payload = json.loads(payload_str)
-            cmd = payload.get("cmd")
-        except Exception:
-            pass
+        try: cmd = json.loads(payload_str).get("cmd")
+        except: pass
 
-    # --- Кнопка "Сгенерировать пост" ---
+    # --- Кнопки главного меню ---
     if cmd == "generate":
-        user_states[peer_id] = {"state": "waiting_topic", "last_topic": None, "last_style": None}
-        send_message(peer_id, "📝 **Напиши тему для поста**\n\n💡 *Примеры форматов:*\n• 'Кофе' — стандартный пост\n• 'Кофе, строго' — деловой стиль\n• 'Кофе, весело, с эмодзи' — яркий пост\n• 'Кофе, список' — структурированный список\n• 'Кофе, история' — повествование", get_keyboard())
+        ctx["state"] = "waiting_topic"
+        s = ctx["settings"]
+        send_message(peer_id, f"📝 Напишите тему или просто пришлите запрос (например: «напиши пост про кофе»).\n\n⚙️ Текущие настройки:\n• Стиль: {s['style']}\n• Объем: {s['length']}\n• Эмодзи: {s['emoji']}", get_main_keyboard())
 
-    # --- Кнопка "Хэштеги" ---
     elif cmd == "hashtags":
-        user_states[peer_id] = {"state": "waiting_hashtag_topic", "last_topic": None}
-        send_message(peer_id, "#️⃣ Напиши тему для подбора хэштегов:", get_keyboard())
+        ctx["state"] = "waiting_hashtag"
+        send_message(peer_id, "#️⃣ Напишите тему для подбора хэштегов:", get_main_keyboard())
 
-    # --- Кнопка "Премиум" ---
     elif cmd == "premium":
-        send_message(peer_id, "👑 **Премиум-функции:**\n\n• Безлимитная генерация\n• Расширенная аналитика\n• Экспорт постов\n• Приоритетная поддержка\n\nСкоро подключение оплаты!", get_keyboard())
+        send_message(peer_id, "👑 Премиум-функции в разработке! Скоро: аналитика, автопостинг, шаблоны.", get_main_keyboard())
 
-    # --- Обработка текстовых сообщений ---
+    elif cmd == "settings":
+        ctx["state"] = "settings"
+        send_message(peer_id, "️ Настройки генерации. Нажимайте кнопки для переключения:", get_settings_keyboard(ctx["settings"]))
+
+    elif cmd == "len_next":
+        cycle = ["short", "medium", "long"]
+        ctx["settings"]["length"] = cycle[(cycle.index(ctx["settings"]["length"]) + 1) % 3]
+        send_message(peer_id, f"✅ Объем изменен: {ctx['settings']['length']}", get_settings_keyboard(ctx["settings"]))
+
+    elif cmd == "emoji_next":
+        cycle = ["off", "minimal", "normal", "rich"]
+        ctx["settings"]["emoji"] = cycle[(cycle.index(ctx["settings"]["emoji"]) + 1) % 4]
+        send_message(peer_id, f"✅ Эмодзи изменены: {ctx['settings']['emoji']}", get_settings_keyboard(ctx["settings"]))
+
+    elif cmd == "style_next":
+        cycle = ["balanced", "strict", "casual", "list", "story"]
+        ctx["settings"]["style"] = cycle[(cycle.index(ctx["settings"]["style"]) + 1) % 5]
+        send_message(peer_id, f"✅ Стиль изменен: {ctx['settings']['style']}", get_settings_keyboard(ctx["settings"]))
+
+    elif cmd == "reset":
+        ctx["settings"] = DEFAULT_SETTINGS.copy()
+        send_message(peer_id, "🔄 Настройки сброшены.", get_settings_keyboard(ctx["settings"]))
+
+    elif cmd == "back":
+        ctx["state"] = "menu"
+        send_message(peer_id, "🔙 Главное меню:", get_main_keyboard())
+
+    # --- Текстовый ввод ---
     elif text:
-        text_lower = text.lower().strip()
-        
-        if peer_id in user_states:
-            state_data = user_states[peer_id]
-            state = state_data.get("state")
-            
-            # --- Ожидание темы поста ---
-            if state == "waiting_topic":
-                # Расширенные ключевые слова для стилей
-                style_map = {
-                    "строго": {"name": "ДЕЛОВОЙ", "emoji": "💼", "format": "formal"},
-                    "серьезно": {"name": "ДЕЛОВОЙ", "emoji": "💼", "format": "formal"},
-                    "научно": {"name": "НАУЧНЫЙ", "emoji": "🔬", "format": "academic"},
-                    "официально": {"name": "ОФИЦИАЛЬНЫЙ", "emoji": "📋", "format": "official"},
-                    "весело": {"name": "ЛЕГКИЙ", "emoji": "😊", "format": "casual"},
-                    "легко": {"name": "ДРУЖЕЛЮБНЫЙ", "emoji": "✨", "format": "friendly"},
-                    "позитивно": {"name": "ВДОХНОВЛЯЮЩИЙ", "emoji": "🌟", "format": "inspirational"},
-                    "эмоционально": {"name": "ЯРКИЙ", "emoji": "🔥", "format": "emotional"},
-                    "список": {"name": "СТРУКТУРА", "emoji": "📋", "format": "list"},
-                    "структура": {"name": "СТРУКТУРА", "emoji": "📊", "format": "structured"},
-                    "история": {"name": "ПОВЕСТВОВАНИЕ", "emoji": "📖", "format": "narrative"},
-                    "инструкция": {"name": "ИНСТРУКЦИЯ", "emoji": "📌", "format": "tutorial"},
-                    "гайд": {"name": "ГАЙД", "emoji": "", "format": "guide"},
-                    "советы": {"name": "СОВЕТЫ", "emoji": "💡", "format": "tips"},
-                }
-                
-                # Определяем стиль
-                detected_style = "СТАНДАРТНЫЙ"
-                format_type = "balanced"
-                style_emoji = "✍️"
-                
-                for keyword, style_info in style_map.items():
-                    if keyword in text_lower:
-                        detected_style = style_info["name"]
-                        format_type = style_info["format"]
-                        style_emoji = style_info["emoji"]
-                        text = text_lower.replace(keyword, "").replace(",", "").strip()
-                        break
-                
-                state_data["last_topic"] = text
-                state_data["last_style"] = detected_style
-                
-                # 🔥 ПРОДВИНУТЫЙ СИСТЕМНЫЙ ПРОМПТ (как у Claude)
-                system_prompt = f"""Ты — профессиональный контент-мейкер с талантом к красивому форматированию. Твой стиль похож на Claude AI: thoughtful, detailed, well-structured.
+        if ctx["state"] in ["waiting_topic", "menu"]:
+            ctx["state"] = "generating"
+            send_message(peer_id, "⏳ Генерирую...", None)
+            system_prompt = build_system_prompt(text, ctx["settings"])
+            ai_text = generate_ai_response(text, system_prompt)
+            send_message(peer_id, ai_text, get_main_keyboard())
+            ctx["state"] = "menu"
 
-📝 **ЗАДАЧА:**
-Создай качественный пост для ВКонтакте на тему: "{text}"
+        elif ctx["state"] == "waiting_hashtag":
+            sys_h = "Подбери 12 релевантных хэштегов на русском языке. Только список через пробел. Без лишних слов и объяснений."
+            ai_hash = generate_ai_response(text, sys_h)
+            send_message(peer_id, ai_hash, get_main_keyboard())
+            ctx["state"] = "menu"
 
-🎨 **СТИЛЬ:** {detected_style} {style_emoji}
-
-🎯 **ФОРМАТИРОВАНИЕ (критически важно):**
-
-1. **ЗАГОЛОВОК:** 
-   - Используй **жирный текст** 
-   - Добавь 1-2 релевантных эмодзи в начале или конце
-   - Пример: "☕️ Кофе: энергия и вдохновение"
-
-2. **АБЗАЦЫ И ОТСТУПЫ:**
-   - Обязательно делай пустую строку между абзацами
-   - Каждый абзац — 2-4 предложения
-   - Не пиши "стеной текста"!
-
-3. **СПИСКИ:**
-   - Для маркированных списков используй: • или — или ✓
-   - Для нумерованных: 1. 2. 3.
-   - Добавляй эмодзи перед пунктами, если уместно
-   - Пример: "☕️ Утренний кофе" или "✓ Польза для здоровья"
-
-4. **ЭМОДЗИ (интеллектуальное использование):**
-   - Используй эмодзи КОНТЕКСТНО: кофе → ☕️, здоровье → 💚, энергия → ⚡️
-   - Не ставь эмодзи после каждого слова
-   - 1-2 эмодзи в заголовке, 1 эмодзи на абзац — оптимально
-   - Для списков: ✓ • → ➤ ✨ 
-
-5. **ВЫДЕЛЕНИЕ:**
-   - **Жирный текст** для подзаголовков и ключевых мыслей
-   - *Курсив* для акцентов (редко)
-
-6. **СТРУКТУРА ПОСТА:**
-   - Заголовок с эмодзи
-   - Введение (1 абзац)
-   - Основная часть (2-3 абзаца или список)
-   - Заключение или призыв к действию
-   - 1-2 эмодзи в конце
-
-📌 **ПРИМЕР ХОРОШЕГО ФОРМАТИРОВАНИЯ:**
-
-**☕️ Кофе: искусство пробуждения**
-
-Кофе — это не просто напиток, а настоящий ритуал, который помогает нам начать день с энергией и вдохновением.
-
-**Почему мы любим кофе:**
-
-✓ **Энергия** — кофеин дарит бодрость и концентрацию
-✓ **Настроение** — аромат свежего кофе поднимает дух
-✓ **Традиции** — у каждого свой любимый способ приготовления
-
-**Совет бариста:**
-Попробуйте приготовить кофе альтернативным способом — пуровер или кемекс раскроют новые грани вкуса! ☕️✨
-
-А какой ваш любимый способ приготовления кофе? Делитесь в комментариях! 👇
-
- **КРИТИЧЕСКИ ВАЖНО:**
-- Грамотность на 100%
-- Естественное форматирование (не роботизированное)
-- Эмодзи как акценты, не как спам
-- Воздух между абзацами
-- Читаемость и эстетика
-
-Пиши так, чтобы пост хотелось сохранить в закладки! 💫"""
-
-                ai_text = generate_ai_response(f"Тема: {text}", system_prompt)
-                send_message(peer_id, ai_text, get_keyboard())
-                state_data["state"] = "menu"
-
-            # --- Ожидание темы для хэштегов ---
-            elif state == "waiting_hashtag_topic":
-                system_prompt = """Ты эксперт по SEO и хэштегам для ВКонтакте.
-
-Подбери 10-15 релевантных хэштегов на русском языке.
-
-Формат:
-- Только хэштеги через пробел
-- Без лишних слов
-- Смешивай популярные (#кофе) и узкоспециализированные (#кофемания)
-- Добавляй 1-2 эмодзи в начале или конце строки
-
-Пример: #кофе #утро #энергия #кофемания #бодрость ☕️"""
-                
-                ai_text = generate_ai_response(f"Тема: {text}", system_prompt)
-                send_message(peer_id, ai_text, get_keyboard())
-                state_data["state"] = "menu"
-            
-            # --- Меню (перегенерация) ---
-            elif state == "menu":
-                last_topic = state_data.get("last_topic")
-                last_style = state_data.get("last_style", "стандартный")
-                
-                if last_topic:
-                    # Проверяем команды
-                    if any(kw in text_lower for kw in ["перегенерируй", "еще раз", "заново", "другой вариант"]):
-                        # Перегенерируем с тем же стилем
-                        send_message(peer_id, f"🔄 Перегенерирую пост на тему \"{last_topic}\" в стиле \"{last_style}\"...", None)
-                        state_data["state"] = "waiting_topic"
-                        await process_user_action(peer_id, f"{last_topic}, {last_style.lower()}", "")
-                    
-                    elif any(kw in text_lower for kw in ["измени стиль", "другой стиль", "поменяй стиль"]):
-                        send_message(peer_id, f"📌 Последняя тема: **{last_topic}**\n\nНапиши новый стиль:\n• строго / весело / научно / список / история", get_keyboard())
-                        state_data["state"] = "waiting_style_change"
-                    
-                    elif any(kw in text_lower for kw in ["строго", "весело", "научно", "список", "история"]):
-                        # Меняем стиль и перегенерируем
-                        state_data["state"] = "waiting_topic"
-                        await process_user_action(peer_id, f"{last_topic}, {text_lower}", "")
-                    
-                    else:
-                        # Новая тема
-                        send_message(peer_id, f"📌 Последняя тема: **{last_topic}** ({last_style})\n\nНапиши:\n• 'перегенерируй' — создать заново\n• 'весело/строго' — изменить стиль\n• новую тему для поста", get_keyboard())
-                        state_data["state"] = "waiting_topic"
-                else:
-                    send_message(peer_id, "👋 Выбери действие в меню:", get_keyboard())
-        
         else:
-            # Первое сообщение от пользователя
-            user_states[peer_id] = {"state": "menu", "last_topic": None, "last_style": None}
-            send_message(peer_id, "👋 **Привет! Я SMM AI Assistant** ✨\n\nЯ создаю качественный контент для ВКонтакте с помощью искусственного интеллекта.\n\n**Что я умею:**\n✓ Генерировать посты в разных стилях\n✓ Подбирать хэштеги\n✓ Форматировать текст с эмодзи\n✓ Запоминать контекст\n\nВыбери действие в меню!", get_keyboard())
-
-    else:
-        if peer_id in user_states:
-            send_message(peer_id, "Выбери действие в меню:", get_keyboard())
-        else:
-            user_states[peer_id] = {"state": "menu", "last_topic": None}
-            send_message(peer_id, "👋 Привет! Я SMM AI Assistant. Выбери действие:", get_keyboard())
+            send_message(peer_id, "Выберите действие в меню:", get_main_keyboard())
 
 @app.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
-        event_type = data.get("type")
-
-        if event_type == "confirmation":
+        if data.get("type") == "confirmation":
             return Response(content=CONFIRMATION_CODE, media_type="text/plain")
-
-        if event_type == "message_new":
+        if data.get("type") == "message_new":
             msg = data["object"]["message"]
-            peer_id = msg["peer_id"]
-            text = msg.get("text", "").strip()
-            payload_str = msg.get("payload", "")
-
-            background_tasks.add_task(process_user_action, peer_id, text, payload_str)
-
+            background_tasks.add_task(process_user_action, msg["peer_id"], msg.get("text", "").strip(), msg.get("payload", ""))
     except Exception as e:
-        print(f"❌ Ошибка в webhook: {e}")
-
+        print(f"❌ Webhook error: {e}")
     return Response(content="ok", media_type="text/plain")
