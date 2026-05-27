@@ -46,7 +46,7 @@ def generate_ai_response(user_prompt: str, system_role: str) -> str:
         return "️ AI-ключ не настроен. Обратись к администратору."
     try:
         response = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": system_role},
                 {"role": "user", "content": user_prompt}
