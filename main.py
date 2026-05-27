@@ -8,9 +8,6 @@ from groq import Groq
 
 load_dotenv()
 
-print(f"🔍 DEBUG: GROQ_API_KEY загружен = {'ДА' if os.getenv('GROQ_API_KEY') else 'НЕТ'}")
-print(f"🔍 DEBUG: GROQ_API_KEY (первые 10 симв) = '{os.getenv('GROQ_API_KEY', '')[:10]}'")
-
 app = FastAPI()
 TOKEN = os.getenv("VK_TOKEN")
 CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE")
@@ -26,7 +23,7 @@ def get_keyboard():
         "one_time": False,
         "inline": False,
         "buttons": [
-            [{"action": {"type": "text", "label": " Сгенерировать пост", "payload": "{\"cmd\":\"generate\"}"}, "color": "primary"},
+            [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": "{\"cmd\":\"generate\"}"}, "color": "primary"},
              {"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": "{\"cmd\":\"hashtags\"}"}, "color": "secondary"}],
             [{"action": {"type": "text", "label": "👑 Премиум", "payload": "{\"cmd\":\"premium\"}"}, "color": "positive"}]
         ]
@@ -42,11 +39,14 @@ def send_message(peer_id: int, text: str, keyboard=None):
         print(f"❌ Ошибка отправки: {e}")
 
 def generate_ai_response(user_prompt: str, system_role: str) -> str:
+    print(f" Вызов Groq API...")
+    
     if not groq_client:
-        return "️ AI-ключ не настроен. Обратись к администратору."
+        return "️ AI-ключ не настроен."
+    
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="llama-3.1-8b-instant", # Актуальная бесплатная модель
             messages=[
                 {"role": "system", "content": system_role},
                 {"role": "user", "content": user_prompt}
@@ -55,9 +55,10 @@ def generate_ai_response(user_prompt: str, system_role: str) -> str:
             temperature=0.7
         )
         return response.choices[0].message.content.strip()
+        
     except Exception as e:
-        print(f"❌ Ошибка Groq API: {e}")
-        return f"⚠️ Нейросеть временно недоступна. Попробуй позже."
+        print(f"❌ Groq Error: {e}")
+        return f"⚠️ Нейросеть временно недоступна."
 
 async def process_user_action(peer_id, text, payload_str):
     cmd = None
@@ -68,28 +69,49 @@ async def process_user_action(peer_id, text, payload_str):
         except Exception:
             pass
 
+    # --- Логика генерации поста ---
     if cmd == "generate" or text.lower() == "сгенерировать пост":
         user_states[peer_id] = "waiting_topic"
-        send_message(peer_id, "📝 Напиши тему для поста:", get_keyboard())
+        send_message(peer_id, "📝 Напиши тему для поста.\n💡 *Совет:* Добавь стиль через запятую (например: 'Кофе, строго' или 'Кофе, весело').", get_keyboard())
 
     elif cmd == "hashtags" or text.lower() == "хэштеги":
         user_states[peer_id] = "waiting_hashtag_topic"
-        send_message(peer_id, "#️⃣ Напиши тему для подбора хэштегов:", get_keyboard())
+        send_message(peer_id, "#️⃣ Напиши тему для хэштегов:", get_keyboard())
 
     elif cmd == "premium":
-        send_message(peer_id, "👑 Премиум: безлимитная генерация, аналитика, экспорт. Скоро подключение оплаты!", get_keyboard())
+        send_message(peer_id, "👑 Премиум: безлимитная генерация и аналитика. Скоро!", get_keyboard())
 
+    # --- Обработка ответа пользователя (тема поста) ---
     elif peer_id in user_states:
         state = user_states[peer_id]
+        
         if state == "waiting_topic":
-            system = "Ты опытный SMM-специалист. Пиши вовлекающие посты для ВКонтакте. Используй эмодзи, разбивай на абзацы, добавляй призыв к действию. Длина: до 800 символов. Только текст поста, без лишних комментариев."
-            ai_text = generate_ai_response(f"Тема поста: {text}", system)
+            # 🧠 УМНЫЙ РЕЖИМ: Определяем стиль по ключевым словам
+            text_lower = text.lower()
+            style_instruction = "Профессиональный, сбалансированный стиль. Умеренное использование эмодзи."
+            
+            if any(w in text_lower for w in ["строго", "серьезно", "научно", "официально", "сухо"]):
+                style_instruction = "СТРОГИЙ СТИЛЬ: Пиши сухо, фактологично, как в научной статье или деловом отчете. ЗАПРЕЩЕНО использовать смайлики и эмоции."
+            elif any(w in text_lower for w in ["весело", "легко", "дружелюбно", "с юмором", "позитивно", "зазывающе"]):
+                style_instruction = "ЛЕГКИЙ СТИЛЬ: Пиши живо, эмоционально, с юмором. Можно использовать смайлики, но не более 5 штук."
+            
+            # Формируем строгий системный промпт против спама смайлами
+            system_prompt = f"""Ты профессиональный SMM-специалист.
+Твоя задача: написать пост на тему "{text}".
+Стиль: {style_instruction}
+
+ВАЖНЫЕ ПРАВИЛА:
+1. 🚫 ЗАПРЕТ НА СПАМ СМАЙЛИКАМИ: Используй МАКСИМУМ 3-4 смайлика на весь текст. Не ставь смайлик в конце каждого предложения.
+2. Текст должен быть структурирован: Заголовок, Основная часть, Призыв к действию.
+3. Никакой воды, только польза."""
+
+            ai_text = generate_ai_response(f"Тема: {text}", system_prompt)
             send_message(peer_id, ai_text, get_keyboard())
             del user_states[peer_id]
 
         elif state == "waiting_hashtag_topic":
-            system = "Ты эксперт по хэштегам. Верни ровно 10 релевантных хэштегов на русском языке, разделенных пробелом. Без лишних слов, без нумерации."
-            ai_text = generate_ai_response(f"Тема: {text}", system)
+            system_prompt = "Ты эксперт по SEO. Подбери ровно 10 релевантных хэштегов на русском языке. Только список через пробел, без лишних слов."
+            ai_text = generate_ai_response(f"Тема: {text}", system_prompt)
             send_message(peer_id, ai_text, get_keyboard())
             del user_states[peer_id]
         else:
