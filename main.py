@@ -115,7 +115,3 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         print(f"❌ Ошибка в webhook: {e}")
 
     return Response(content="ok", media_type="text/plain")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
