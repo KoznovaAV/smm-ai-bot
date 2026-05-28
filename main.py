@@ -4,10 +4,10 @@ import random
 import re
 import sys
 import logging
+import httpx
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from vk_api import VkApi
 from dotenv import load_dotenv
-from openai import OpenAI
 
 load_dotenv()
 
@@ -22,14 +22,7 @@ YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "")
 if not YANDEX_API_KEY:
     logger.error("❌ YANDEX_API_KEY не найден в переменных среды Render!")
 else:
-    logger.info(f"🔑 Yandex ключ загружен (начало: {YANDEX_API_KEY[:6]}...)")
-
-# 🔧 ИСПРАВЛЕННЫЙ URL: убрана лишняя 'f' в foundationModels
-ai_client = OpenAI(
-    api_key="not-used",  # Переопределяем заголовок вручную
-    base_url="https://llm.api.cloud.yandex.net/foundationModels/v1/openai/v1",
-    default_headers={"Authorization": f"Api-Key {YANDEX_API_KEY}"}
-)
+    logger.info(f" Yandex ключ загружен (начало: {YANDEX_API_KEY[:6]}...)")
 
 vk = VkApi(token=TOKEN)
 user_context = {}
@@ -44,7 +37,7 @@ def get_main_keyboard():
             [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": json.dumps({"cmd":"generate"})}, "color": "primary"}],
             [{"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
              {"action": {"type": "text", "label": "⚙️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
-            [{"action": {"type": "text", "label": "👑 Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
+            [{"action": {"type": "text", "label": " Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
         ]
     })
 
@@ -55,9 +48,9 @@ def get_settings_keyboard(settings):
             "color": "primary" if is_active else "default"
         }
 
-    len_opts = [(" Коротко", "set_len_short"), (" Средне", "set_len_medium"), (" Длинно", "set_len_long")]
+    len_opts = [("🔹 Коротко", "set_len_short"), ("🔸 Средне", "set_len_medium"), ("🔺 Длинно", "set_len_long")]
     emoji_opts = [("😶 Без", "set_emoji_off"), ("✨ Мало", "set_emoji_minimal"), ("🎨 Норма", "set_emoji_normal"), ("🌈 Много", "set_emoji_rich")]
-    style_opts = [("👔 Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), (" Список", "set_style_list"), ("📖 История", "set_style_story"), ("⚖️ Баланс", "set_style_balanced")]
+    style_opts = [("👔 Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), ("📋 Список", "set_style_list"), ("📖 История", "set_style_story"), ("⚖️ Баланс", "set_style_balanced")]
 
     rows = [
         [btn(l, c, settings["length"] == c.split("_")[-1]) for l, c in len_opts],
@@ -137,20 +130,35 @@ def send_message(peer_id: int, text: str, keyboard=None):
         logger.error(f"❌ Send error: {e}")
 
 def generate_ai_response(prompt: str, system_role: str) -> str:
+    # Прямой HTTP-запрос к YandexGPT (минуя quirks OpenAI SDK)
+    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Api-Key {YANDEX_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "yandexgpt",
+        "messages": [
+            {"role": "system", "content": system_role},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 900,
+        "temperature": 0.4,
+        "top_p": 0.9
+    }
+    
     try:
-        logger.info("📡 Запрос к YandexGPT (model=yandexgpt)...")
-        response = ai_client.chat.completions.create(
-            model="yandexgpt",
-            messages=[
-                {"role": "system", "content": system_role},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=900,
-            temperature=0.4,
-            top_p=0.9
-        )
-        logger.info("✅ YandexGPT ответил успешно")
-        return response.choices[0].message.content.strip()
+        logger.info("📡 Отправка прямого запроса к YandexGPT...")
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            logger.info("✅ YandexGPT ответил успешно")
+            return data["choices"][0]["message"]["content"].strip()
+    except httpx.HTTPStatusError as e:
+        sys.stderr.write(f"🤖 YANDEX HTTP {e.response.status_code}: {e.response.text}\n")
+        sys.stderr.flush()
+        return "⚠️ Ошибка генерации (Yandex вернул ошибку). Проверь ключ или логи."
     except Exception as e:
         sys.stderr.write(f"🤖 YANDEX ERROR: {type(e).__name__}: {e}\n")
         sys.stderr.flush()
@@ -171,7 +179,7 @@ async def process_user_action(peer_id, text, payload_str):
     if cmd == "generate":
         ctx["state"] = "waiting"
         s = ctx["settings"]
-        send_message(peer_id, f"📝 Напишите тему или просто попросите: «сделай пост про...», «текст на тему...», «напиши историю про...».\n\n️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
+        send_message(peer_id, f"📝 Напишите тему или просто попросите: «сделай пост про...», «текст на тему...», «напиши историю про...».\n\n⚙️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
     elif cmd == "hashtags":
         ctx["state"] = "waiting_hash"
         send_message(peer_id, "#️⃣ Напишите тему для хэштегов:", get_main_keyboard())
@@ -182,7 +190,7 @@ async def process_user_action(peer_id, text, payload_str):
         send_message(peer_id, "⚙️ Настройте параметры (кликните на нужное):", get_settings_keyboard(ctx["settings"]))
     elif cmd == "back":
         ctx["state"] = "menu"
-        send_message(peer_id, "🔙 Главное меню:", get_main_keyboard())
+        send_message(peer_id, " Главное меню:", get_main_keyboard())
     elif cmd and cmd.startswith("set_"):
         parts = cmd.split("_")
         if len(parts) == 3:
@@ -222,7 +230,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/test-logs")
 async def test_logs():
-    logger.info(" Test log: check Render Runtime logs")
+    logger.info("🧪 Test log: check Render Runtime logs")
     sys.stderr.write("🔴 Test stderr flush\n")
     sys.stderr.flush()
     return {"status": "ok"}
