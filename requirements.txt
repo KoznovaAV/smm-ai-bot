@@ -2,4 +2,4 @@ fastapi
 uvicorn
 vk-api
 python-dotenv
-groq
+openai

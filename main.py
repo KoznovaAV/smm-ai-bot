@@ -5,18 +5,22 @@ import re
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from vk_api import VkApi
 from dotenv import load_dotenv
-from groq import Groq
+from openai import OpenAI
 
 load_dotenv()
 
 app = FastAPI()
 TOKEN = os.getenv("VK_TOKEN")
 CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
+
+# YandexGPT через OpenAI-совместимый API
+ai_client = OpenAI(
+    api_key=YANDEX_API_KEY,
+    base_url="https://llm.api.cloud.yandex.net/foundationModels/v1/openai/v1"
+)
 
 vk = VkApi(token=TOKEN)
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-
 user_context = {}
 DEFAULT_SETTINGS = {"style": "balanced", "length": "medium", "emoji": "normal"}
 
@@ -27,24 +31,22 @@ def get_main_keyboard():
         "one_time": False, "inline": False,
         "buttons": [
             [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": json.dumps({"cmd":"generate"})}, "color": "primary"}],
-            [{"action": {"type": "text", "label": "#️ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
-             {"action": {"type": "text", "label": "⚙️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
+            [{"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
+             {"action": {"type": "text", "label": "️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
             [{"action": {"type": "text", "label": "👑 Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
         ]
     })
 
 def get_settings_keyboard(settings):
     def btn(label, cmd, is_active=False):
-        # active = primary (синий), inactive = default (серый)
         return {
             "action": {"type": "text", "label": label, "payload": json.dumps({"cmd": cmd})},
             "color": "primary" if is_active else "default"
         }
 
-    # Прямой выбор параметров
-    len_opts = [(" Коротко", "set_len_short"), ("🔸 Средне", "set_len_medium"), ("🔺 Длинно", "set_len_long")]
+    len_opts = [("🔹 Коротко", "set_len_short"), ("🔸 Средне", "set_len_medium"), ("🔺 Длинно", "set_len_long")]
     emoji_opts = [("😶 Без", "set_emoji_off"), ("✨ Мало", "set_emoji_minimal"), ("🎨 Норма", "set_emoji_normal"), ("🌈 Много", "set_emoji_rich")]
-    style_opts = [(" Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), ("📋 Список", "set_style_list"), ("📖 История", "set_style_story"), ("⚖️ Баланс", "set_style_balanced")]
+    style_opts = [(" Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), ("📋 Список", "set_style_list"), (" История", "set_style_story"), ("️ Баланс", "set_style_balanced")]
 
     rows = []
     rows.append([btn(l, c, settings["length"] == c.split("_")[-1]) for l, c in len_opts])
@@ -58,7 +60,6 @@ def get_settings_keyboard(settings):
 
 def clean_vk_text(text: str) -> str:
     if not text: return ""
-    # Удаляем Markdown
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
     text = re.sub(r'__(.+?)__', r'\1', text)
@@ -67,14 +68,13 @@ def clean_vk_text(text: str) -> str:
     text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
     text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
     text = text.replace('**', '').replace('__', '')
-    # Нормализация
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r' +', ' ', text)
     return text.strip()
 
 # ================= ПРОМПТ =================
 
-def build_system_prompt(topic, settings):
+def build_system_prompt(user_message, settings):
     style_map = {
         "balanced": "Сбалансированный, профессиональный тон.",
         "strict": "Деловой, сухой, фактологичный. Без воды и эмоций.",
@@ -94,34 +94,26 @@ def build_system_prompt(topic, settings):
         "rich": "5-8 эмодзи, ярко, но без спама."
     }
 
-    return f"""Ты — senior SMM-редактор с безупречным русским языком. Пишешь тексты для ВКонтакте.
-ТЕМА: {topic}
-НАСТРОЙКИ: Стиль: {style_map[settings['style']]} | Объем: {len_map[settings['length']]} | Эмодзи: {emoji_map[settings['emoji']]}
+    return f"""Ты — senior SMM-редактор для ВКонтакте.
+ПОЛЬЗОВАТЕЛЬ НАПИСАЛ: "{user_message}"
 
- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО:
-1. Английские слова или кальки (никаких "в themselves", "окей", "чек", "дедлайн").
-2. Грамматические ошибки: согласование падежей, окончаний, предлогов. Проверяй каждое предложение.
-3. Роботизированные клише: "В современном мире", "Стоит отметить", "Безусловно", "Является", "Данный текст", "Нельзя не упомянуть", "Силовая история".
-4. Повторы слов в соседних предложениях.
-5. Нелогичные или машинные заголовки.
+🎯 ТВОЯ ЗАДАЧА:
+1. Понять суть запроса (тему, стиль, формат) из сообщения пользователя.
+2. Написать готовый пост строго по настройкам ниже.
 
-✅ ТРЕБУЕТСЯ:
-1. Живой русский язык, как у профессионального копирайтера.
-2. Активный залог вместо пассивного ("Мы сделали", а не "Было сделано").
-3. Чередуй короткие (8-12 слов) и средние предложения. Избегай "простыней".
-4. ЗАГОЛОВКИ только ЗАГЛАВНЫМИ буквами. Пустая строка между абзацами.
-5. Списки оформляй через • или ✓.
-6. В конце: живой вопрос или призыв к действию.
+⚙️ НАСТРОЙКИ:
+Стиль: {style_map[settings['style']]} | Объем: {len_map[settings['length']]} | Эмодзи: {emoji_map[settings['emoji']]}
 
-📌 ПРИМЕР ПРАВИЛЬНОЙ СТРУКТУРЫ:
-ЗАГОЛОВОК ТЕМЫ
+📜 ПРАВИЛА ТЕКСТА:
+• Язык: Живой современный русский. Допускаются устоявшиеся профессионализмы (дедлайн, фича, чек, трафик, кейс, лиды), если они уместны.
+• Запрещено: прямые английские вставки, машинные кальки ("является", "данный текст", "стоит отметить", "в современном мире").
+• Грамматика: 100% точность падежей, окончаний и согласований.
+• Тон: Избегай канцеляризмов. Пиши как живой эксперт или друг.
+• Структура: ЗАГОЛОВОК ЗАГЛАВНЫМИ → Вступление → Основная часть → Вывод/Вопрос.
+• Оформление: Пустая строка между абзацами. Списки через • или ✓. Никакого Markdown (**, *, #, _).
+• Эмодзи: СТРОГО по настройкам. Не добавляй лишние.
 
-Цепляющее введение без воды...
-
-• Тезис 1
-• Тезис 2
-
-Заключение и вопрос аудитории?"""
+Генерируй сразу готовый текст для публикации."""
 
 # ================= ФУНКЦИИ =================
 
@@ -134,17 +126,21 @@ def send_message(peer_id: int, text: str, keyboard=None):
         print(f"❌ Send error: {e}")
 
 def generate_ai_response(prompt: str, system_role: str) -> str:
-    if not groq_client: return "⚠️ AI не настроен."
     try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "system", "content": system_role}, {"role": "user", "content": prompt}],
-            max_tokens=850, temperature=0.5  # Снижена до 0.5 для строгой грамматики
+        response = ai_client.chat.completions.create(
+            model="yandexgpt-lite",
+            messages=[
+                {"role": "system", "content": system_role},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=900,
+            temperature=0.4,  # Чуть поднял для естественности, но оставил контроль
+            top_p=0.9
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"❌ Groq: {e}")
-        return "⚠️ Ошибка генерации. Попробуйте позже."
+        print(f"🤖 YandexGPT Error: {e}")
+        return "️ Ошибка генерации. Попробуйте позже."
 
 # ================= ОБРАБОТЧИК =================
 
@@ -158,14 +154,13 @@ async def process_user_action(peer_id, text, payload_str):
         try: cmd = json.loads(payload_str).get("cmd")
         except: pass
 
-    # Кнопки главного меню
     if cmd == "generate":
         ctx["state"] = "waiting"
         s = ctx["settings"]
-        send_message(peer_id, f" Напишите тему или запрос.\n\n️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
+        send_message(peer_id, f"📝 Напишите тему или просто попросите: «сделай пост про...», «текст на тему...», «напиши историю про...».\n\n⚙️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
     elif cmd == "hashtags":
         ctx["state"] = "waiting_hash"
-        send_message(peer_id, "#️ Тема для хэштегов:", get_main_keyboard())
+        send_message(peer_id, "#️⃣ Напишите тему для хэштегов:", get_main_keyboard())
     elif cmd == "premium":
         send_message(peer_id, "👑 Премиум в разработке. Скоро: аналитика, автопостинг, шаблоны.", get_main_keyboard())
     elif cmd == "settings":
@@ -174,8 +169,6 @@ async def process_user_action(peer_id, text, payload_str):
     elif cmd == "back":
         ctx["state"] = "menu"
         send_message(peer_id, "🔙 Главное меню:", get_main_keyboard())
-
-    # Прямое изменение настроек
     elif cmd and cmd.startswith("set_"):
         parts = cmd.split("_")
         if len(parts) == 3:
@@ -183,18 +176,17 @@ async def process_user_action(peer_id, text, payload_str):
             if param in ["len", "emoji", "style"]:
                 ctx["settings"][param] = value
                 send_message(peer_id, f"✅ Применено: {param} → {value}", get_settings_keyboard(ctx["settings"]))
-
-    # Текстовый ввод
     elif text:
         if ctx["state"] in ["waiting", "menu"]:
             ctx["state"] = "generating"
-            send_message(peer_id, "⏳ Генерирую...", None)
+            send_message(peer_id, " Генерирую...", None)
+            # Передаём полное сообщение пользователя, чтобы AI сам извлёк тему
             prompt = build_system_prompt(text, ctx["settings"])
             ai_text = generate_ai_response(text, prompt)
             send_message(peer_id, ai_text, get_main_keyboard())
             ctx["state"] = "menu"
         elif ctx["state"] == "waiting_hash":
-            sys_h = "12 релевантных хэштегов на русском. Только список через пробел. Без слов."
+            sys_h = "12 релевантных хэштегов на русском. Только список через пробел. Без слов и объяснений."
             send_message(peer_id, generate_ai_response(text, sys_h), get_main_keyboard())
             ctx["state"] = "menu"
         else:
