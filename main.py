@@ -37,7 +37,7 @@ def get_main_keyboard():
             [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": json.dumps({"cmd":"generate"})}, "color": "primary"}],
             [{"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
              {"action": {"type": "text", "label": "⚙️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
-            [{"action": {"type": "text", "label": " Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
+            [{"action": {"type": "text", "label": "👑 Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
         ]
     })
 
@@ -130,8 +130,8 @@ def send_message(peer_id: int, text: str, keyboard=None):
         logger.error(f"❌ Send error: {e}")
 
 def generate_ai_response(prompt: str, system_role: str) -> str:
-    # Прямой HTTP-запрос к YandexGPT (минуя quirks OpenAI SDK)
-    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/openai/v1/chat/completions"
+    # ✅ ПРАВИЛЬНЫЙ URL для OpenAI-совместимого API YandexGPT
+    url = "https://llm.api.cloud.yandex.net/v1/chat/completions"
     headers = {
         "Authorization": f"Api-Key {YANDEX_API_KEY}",
         "Content-Type": "application/json"
@@ -148,7 +148,7 @@ def generate_ai_response(prompt: str, system_role: str) -> str:
     }
     
     try:
-        logger.info("📡 Отправка прямого запроса к YandexGPT...")
+        logger.info("📡 Отправка запроса к YandexGPT...")
         with httpx.Client(timeout=30.0) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()
@@ -158,7 +158,7 @@ def generate_ai_response(prompt: str, system_role: str) -> str:
     except httpx.HTTPStatusError as e:
         sys.stderr.write(f"🤖 YANDEX HTTP {e.response.status_code}: {e.response.text}\n")
         sys.stderr.flush()
-        return "⚠️ Ошибка генерации (Yandex вернул ошибку). Проверь ключ или логи."
+        return "⚠️ Ошибка генерации (код {e.response.status_code}). Проверь ключ или логи."
     except Exception as e:
         sys.stderr.write(f"🤖 YANDEX ERROR: {type(e).__name__}: {e}\n")
         sys.stderr.flush()
@@ -190,7 +190,7 @@ async def process_user_action(peer_id, text, payload_str):
         send_message(peer_id, "⚙️ Настройте параметры (кликните на нужное):", get_settings_keyboard(ctx["settings"]))
     elif cmd == "back":
         ctx["state"] = "menu"
-        send_message(peer_id, " Главное меню:", get_main_keyboard())
+        send_message(peer_id, "🔙 Главное меню:", get_main_keyboard())
     elif cmd and cmd.startswith("set_"):
         parts = cmd.split("_")
         if len(parts) == 3:
