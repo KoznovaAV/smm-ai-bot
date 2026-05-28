@@ -24,11 +24,10 @@ if not YANDEX_API_KEY:
 else:
     logger.info(f"🔑 Yandex ключ загружен (начало: {YANDEX_API_KEY[:6]}...)")
 
-# 🔧 ФИКС АВТОРИЗАЦИИ: Yandex требует "Api-Key", а не "Bearer"
-# OpenAI SDK по умолчанию шлёт Bearer, что вызывает 404 на стороне Яндекса
+# 🔧 ИСПРАВЛЕННЫЙ URL: убрана лишняя 'f' в foundationModels
 ai_client = OpenAI(
-    api_key="dummy",  # SDK требует непустое значение, но мы переопределим заголовок
-    base_url="https://llm.api.cloud.yandex.net/ffoundationModels/v1/openai/v1",
+    api_key="not-used",  # Переопределяем заголовок вручную
+    base_url="https://llm.api.cloud.yandex.net/foundationModels/v1/openai/v1",
     default_headers={"Authorization": f"Api-Key {YANDEX_API_KEY}"}
 )
 
@@ -43,7 +42,7 @@ def get_main_keyboard():
         "one_time": False, "inline": False,
         "buttons": [
             [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": json.dumps({"cmd":"generate"})}, "color": "primary"}],
-            [{"action": {"type": "text", "label": "#️ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
+            [{"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
              {"action": {"type": "text", "label": "⚙️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
             [{"action": {"type": "text", "label": "👑 Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
         ]
@@ -56,9 +55,9 @@ def get_settings_keyboard(settings):
             "color": "primary" if is_active else "default"
         }
 
-    len_opts = [("🔹 Коротко", "set_len_short"), ("🔸 Средне", "set_len_medium"), ("🔺 Длинно", "set_len_long")]
+    len_opts = [(" Коротко", "set_len_short"), (" Средне", "set_len_medium"), (" Длинно", "set_len_long")]
     emoji_opts = [("😶 Без", "set_emoji_off"), ("✨ Мало", "set_emoji_minimal"), ("🎨 Норма", "set_emoji_normal"), ("🌈 Много", "set_emoji_rich")]
-    style_opts = [("👔 Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), ("📋 Список", "set_style_list"), ("📖 История", "set_style_story"), ("⚖️ Баланс", "set_style_balanced")]
+    style_opts = [("👔 Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), (" Список", "set_style_list"), ("📖 История", "set_style_story"), ("⚖️ Баланс", "set_style_balanced")]
 
     rows = [
         [btn(l, c, settings["length"] == c.split("_")[-1]) for l, c in len_opts],
@@ -172,10 +171,10 @@ async def process_user_action(peer_id, text, payload_str):
     if cmd == "generate":
         ctx["state"] = "waiting"
         s = ctx["settings"]
-        send_message(peer_id, f" Напишите тему или просто попросите: «сделай пост про...», «текст на тему...», «напиши историю про...».\n\n⚙️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
+        send_message(peer_id, f"📝 Напишите тему или просто попросите: «сделай пост про...», «текст на тему...», «напиши историю про...».\n\n️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
     elif cmd == "hashtags":
         ctx["state"] = "waiting_hash"
-        send_message(peer_id, "#️ Напишите тему для хэштегов:", get_main_keyboard())
+        send_message(peer_id, "#️⃣ Напишите тему для хэштегов:", get_main_keyboard())
     elif cmd == "premium":
         send_message(peer_id, "👑 Премиум в разработке. Скоро: аналитика, автопостинг, шаблоны.", get_main_keyboard())
     elif cmd == "settings":
@@ -194,7 +193,7 @@ async def process_user_action(peer_id, text, payload_str):
     elif text:
         if ctx["state"] in ["waiting", "menu"]:
             ctx["state"] = "generating"
-            send_message(peer_id, " Генерирую...", None)
+            send_message(peer_id, "⏳ Генерирую...", None)
             prompt = build_system_prompt(text, ctx["settings"])
             ai_text = generate_ai_response(text, prompt)
             send_message(peer_id, ai_text, get_main_keyboard())
@@ -223,7 +222,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/test-logs")
 async def test_logs():
-    logger.info("🧪 Test log: check Render Runtime logs")
+    logger.info(" Test log: check Render Runtime logs")
     sys.stderr.write("🔴 Test stderr flush\n")
     sys.stderr.flush()
     return {"status": "ok"}
