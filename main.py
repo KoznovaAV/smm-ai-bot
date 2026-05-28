@@ -2,6 +2,8 @@ import os
 import json
 import random
 import re
+import sys
+import logging
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from vk_api import VkApi
 from dotenv import load_dotenv
@@ -9,12 +11,19 @@ from openai import OpenAI
 
 load_dotenv()
 
+# Настройка логирования (гарантированно попадает в Render)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
 app = FastAPI()
 TOKEN = os.getenv("VK_TOKEN")
 CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 
-# YandexGPT через OpenAI-совместимый API
+if not YANDEX_API_KEY:
+    logger.error("❌ YANDEX_API_KEY не найден в переменных среды Render!")
+
+# Клиент YandexGPT через OpenAI-совместимый API
 ai_client = OpenAI(
     api_key=YANDEX_API_KEY,
     base_url="https://llm.api.cloud.yandex.net/foundationModels/v1/openai/v1"
@@ -32,7 +41,7 @@ def get_main_keyboard():
         "buttons": [
             [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": json.dumps({"cmd":"generate"})}, "color": "primary"}],
             [{"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
-             {"action": {"type": "text", "label": "️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
+             {"action": {"type": "text", "label": "⚙️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
             [{"action": {"type": "text", "label": "👑 Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
         ]
     })
@@ -45,15 +54,15 @@ def get_settings_keyboard(settings):
         }
 
     len_opts = [("🔹 Коротко", "set_len_short"), ("🔸 Средне", "set_len_medium"), ("🔺 Длинно", "set_len_long")]
-    emoji_opts = [("😶 Без", "set_emoji_off"), ("✨ Мало", "set_emoji_minimal"), ("🎨 Норма", "set_emoji_normal"), ("🌈 Много", "set_emoji_rich")]
-    style_opts = [(" Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), ("📋 Список", "set_style_list"), (" История", "set_style_story"), ("️ Баланс", "set_style_balanced")]
+    emoji_opts = [(" Без", "set_emoji_off"), ("✨ Мало", "set_emoji_minimal"), ("🎨 Норма", "set_emoji_normal"), ("🌈 Много", "set_emoji_rich")]
+    style_opts = [("👔 Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), ("📋 Список", "set_style_list"), ("📖 История", "set_style_story"), ("⚖️ Баланс", "set_style_balanced")]
 
-    rows = []
-    rows.append([btn(l, c, settings["length"] == c.split("_")[-1]) for l, c in len_opts])
-    rows.append([btn(e, c, settings["emoji"] == c.split("_")[-1]) for e, c in emoji_opts])
-    rows.append([btn(s, c, settings["style"] == c.split("_")[-1]) for s, c in style_opts])
-    rows.append([{"action": {"type": "text", "label": "🔙 В главное меню", "payload": json.dumps({"cmd": "back"})}, "color": "negative"}])
-
+    rows = [
+        [btn(l, c, settings["length"] == c.split("_")[-1]) for l, c in len_opts],
+        [btn(e, c, settings["emoji"] == c.split("_")[-1]) for e, c in emoji_opts],
+        [btn(s, c, settings["style"] == c.split("_")[-1]) for s, c in style_opts],
+        [{"action": {"type": "text", "label": "🔙 В главное меню", "payload": json.dumps({"cmd": "back"})}, "color": "negative"}]
+    ]
     return json.dumps({"one_time": False, "inline": False, "buttons": rows})
 
 # ================= ОЧИСТКА ТЕКСТА =================
@@ -97,7 +106,7 @@ def build_system_prompt(user_message, settings):
     return f"""Ты — senior SMM-редактор для ВКонтакте.
 ПОЛЬЗОВАТЕЛЬ НАПИСАЛ: "{user_message}"
 
-🎯 ТВОЯ ЗАДАЧА:
+ ТВОЯ ЗАДАЧА:
 1. Понять суть запроса (тему, стиль, формат) из сообщения пользователя.
 2. Написать готовый пост строго по настройкам ниже.
 
@@ -123,24 +132,28 @@ def send_message(peer_id: int, text: str, keyboard=None):
         if keyboard: params["keyboard"] = keyboard
         vk.method("messages.send", params)
     except Exception as e:
-        print(f"❌ Send error: {e}")
+        logger.error(f"❌ Send error: {e}")
 
 def generate_ai_response(prompt: str, system_role: str) -> str:
     try:
+        logger.info("📡 Запрос к YandexGPT (model=yandexgpt)...")
         response = ai_client.chat.completions.create(
-            model="yandexgpt-lite",
+            model="yandexgpt",
             messages=[
                 {"role": "system", "content": system_role},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=900,
-            temperature=0.4,  # Чуть поднял для естественности, но оставил контроль
+            temperature=0.4,
             top_p=0.9
         )
+        logger.info("✅ YandexGPT ответил успешно")
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"🤖 YandexGPT Error: {e}")
-        return "️ Ошибка генерации. Попробуйте позже."
+        # Принудительный сброс в stderr (гарантированно видно в Render)
+        sys.stderr.write(f"🤖 YANDEX ERROR: {type(e).__name__}: {e}\n")
+        sys.stderr.flush()
+        return "⚠️ Ошибка генерации. Попробуйте позже."
 
 # ================= ОБРАБОТЧИК =================
 
@@ -180,7 +193,6 @@ async def process_user_action(peer_id, text, payload_str):
         if ctx["state"] in ["waiting", "menu"]:
             ctx["state"] = "generating"
             send_message(peer_id, " Генерирую...", None)
-            # Передаём полное сообщение пользователя, чтобы AI сам извлёк тему
             prompt = build_system_prompt(text, ctx["settings"])
             ai_text = generate_ai_response(text, prompt)
             send_message(peer_id, ai_text, get_main_keyboard())
@@ -192,6 +204,8 @@ async def process_user_action(peer_id, text, payload_str):
         else:
             send_message(peer_id, "Выберите действие:", get_main_keyboard())
 
+# ================= РОУТЫ =================
+
 @app.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
     try:
@@ -202,5 +216,12 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
             msg = data["object"]["message"]
             background_tasks.add_task(process_user_action, msg["peer_id"], msg.get("text", "").strip(), msg.get("payload", ""))
     except Exception as e:
-        print(f"❌ Webhook: {e}")
+        logger.error(f"❌ Webhook error: {e}")
     return Response(content="ok", media_type="text/plain")
+
+@app.get("/test-logs")
+async def test_logs():
+    logger.info("🧪 Test log: check Render Runtime logs")
+    sys.stderr.write("🔴 Test stderr flush\n")
+    sys.stderr.flush()
+    return {"status": "ok"}
