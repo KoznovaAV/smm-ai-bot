@@ -4,10 +4,11 @@ import random
 import re
 import sys
 import logging
-import httpx
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from vk_api import VkApi
 from dotenv import load_dotenv
+from yandex_ai_studio_sdk import AIStudio
+from yandex_ai_studio_sdk.auth import APIKeyAuth
 
 load_dotenv()
 
@@ -18,14 +19,26 @@ app = FastAPI()
 TOKEN = os.getenv("VK_TOKEN")
 CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "")
-YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")  # ← НОВОЕ: добавь в Render!
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")
 
 if not YANDEX_API_KEY:
     logger.error("❌ YANDEX_API_KEY не найден!")
 if not YANDEX_FOLDER_ID:
-    logger.warning("⚠️ YANDEX_FOLDER_ID не найден! Бот не сможет генерировать текст.")
+    logger.warning("⚠️ YANDEX_FOLDER_ID не найден!")
 else:
     logger.info(f"✅ Yandex настроен: folder={YANDEX_FOLDER_ID[:10]}...")
+
+# 🔧 Инициализация официального SDK (правильная схема из документации)
+ai_sdk = None
+if YANDEX_API_KEY and YANDEX_FOLDER_ID:
+    try:
+        ai_sdk = AIStudio(
+            folder_id=YANDEX_FOLDER_ID,
+            auth=APIKeyAuth(YANDEX_API_KEY)
+        )
+        logger.info("✅ AI Studio SDK инициализирован успешно")
+    except Exception as e:
+        logger.error(f"❌ Ошибка инициализации SDK: {e}")
 
 vk = VkApi(token=TOKEN)
 user_context = {}
@@ -133,45 +146,37 @@ def send_message(peer_id: int, text: str, keyboard=None):
         logger.error(f"❌ Send error: {e}")
 
 def generate_ai_response(prompt: str, system_role: str) -> str:
-    # 🔧 НАТИВНЫЙ API YANDEXGPT (стабильный и документированный)
-    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+    if not ai_sdk:
+        return "⚠️ AI не настроен. Проверь ключи в Render."
     
-    # Model URI в формате: models://<folder_id>/<model_name>
-    model_uri = f"models://{YANDEX_FOLDER_ID}/yandexgpt-lite/latest"
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Api-Key {YANDEX_API_KEY}"
-    }
-    
-    payload = {
-        "modelUri": model_uri,
-        "completionOptions": {
-            "stream": False,
-            "temperature": 0.4,
-            "maxTokens": 900
-        },
-        "messages": [
+    try:
+        logger.info("📡 Запрос к YandexGPT через AI Studio SDK...")
+        
+        # 🔧 Правильное использование SDK из документации:
+        model = ai_sdk.models.completions("yandexgpt")
+        model = model.configure(
+            temperature=0.4,
+            max_tokens=900
+        )
+        
+        # Формируем сообщения в формате, который понимает SDK
+        messages = [
             {"role": "system", "text": system_role},
             {"role": "user", "text": prompt}
         ]
-    }
-    
-    try:
-        logger.info(f"📡 Запрос к YandexGPT (modelUri: {model_uri})...")
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
+        
+        result = model.run(messages)
+        
+        # Извлекаем текст из результата (по документации: result.alternatives[0].text)
+        if result and result.alternatives and len(result.alternatives) > 0:
             logger.info("✅ YandexGPT ответил успешно")
-            # Нативный API возвращает ответ в другой структуре
-            return data["result"]["alternatives"][0]["message"]["text"].strip()
-    except httpx.HTTPStatusError as e:
-        sys.stderr.write(f"🤖 YANDEX HTTP {e.response.status_code}: {e.response.text}\n")
-        sys.stderr.flush()
-        return f"⚠️ Ошибка генерации (код {e.response.status_code}). Проверь ключ, folder_id или логи."
+            return result.alternatives[0].text.strip()
+        else:
+            logger.warning("⚠️ Пустой ответ от модели")
+            return "⚠️ Нейросеть вернула пустой ответ. Попробуйте другую тему."
+        
     except Exception as e:
-        sys.stderr.write(f"🤖 YANDEX ERROR: {type(e).__name__}: {e}\n")
+        sys.stderr.write(f"🤖 YANDEX SDK ERROR: {type(e).__name__}: {e}\n")
         sys.stderr.flush()
         return "⚠️ Ошибка генерации. Попробуйте позже."
 
