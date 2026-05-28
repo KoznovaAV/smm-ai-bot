@@ -137,7 +137,7 @@ def generate_ai_response(prompt: str, system_role: str) -> str:
     url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
     
     # Model URI в формате: models://<folder_id>/<model_name>
-    model_uri = f"models://{YANDEX_FOLDER_ID}/yandexgpt-lite"
+    model_uri = f"models://{YANDEX_FOLDER_ID}/yandexgpt-lite/latest"
     
     headers = {
         "Content-Type": "application/json",
