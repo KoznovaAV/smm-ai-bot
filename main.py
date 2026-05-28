@@ -18,11 +18,14 @@ app = FastAPI()
 TOKEN = os.getenv("VK_TOKEN")
 CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "")
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "")  # ← НОВОЕ: добавь в Render!
 
 if not YANDEX_API_KEY:
-    logger.error("❌ YANDEX_API_KEY не найден в переменных среды Render!")
+    logger.error("❌ YANDEX_API_KEY не найден!")
+if not YANDEX_FOLDER_ID:
+    logger.warning("⚠️ YANDEX_FOLDER_ID не найден! Бот не сможет генерировать текст.")
 else:
-    logger.info(f" Yandex ключ загружен (начало: {YANDEX_API_KEY[:6]}...)")
+    logger.info(f"✅ Yandex настроен: folder={YANDEX_FOLDER_ID[:10]}...")
 
 vk = VkApi(token=TOKEN)
 user_context = {}
@@ -130,35 +133,43 @@ def send_message(peer_id: int, text: str, keyboard=None):
         logger.error(f"❌ Send error: {e}")
 
 def generate_ai_response(prompt: str, system_role: str) -> str:
-    # ✅ ПРАВИЛЬНЫЙ URL для OpenAI-совместимого API YandexGPT
-    url = "https://llm.api.cloud.yandex.net/v1/chat/completions"
+    # 🔧 НАТИВНЫЙ API YANDEXGPT (стабильный и документированный)
+    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+    
+    # Model URI в формате: models://<folder_id>/<model_name>
+    model_uri = f"models://{YANDEX_FOLDER_ID}/yandexgpt-lite"
+    
     headers = {
-        "Authorization": f"Api-Key {YANDEX_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": f"Api-Key {YANDEX_API_KEY}"
     }
+    
     payload = {
-        "model": "yandexgpt",
+        "modelUri": model_uri,
+        "completionOptions": {
+            "stream": False,
+            "temperature": 0.4,
+            "maxTokens": 900
+        },
         "messages": [
-            {"role": "system", "content": system_role},
-            {"role": "user", "content": prompt}
-        ],
-        "max_tokens": 900,
-        "temperature": 0.4,
-        "top_p": 0.9
+            {"role": "system", "text": system_role},
+            {"role": "user", "text": prompt}
+        ]
     }
     
     try:
-        logger.info("📡 Отправка запроса к YandexGPT...")
+        logger.info(f"📡 Запрос к YandexGPT (modelUri: {model_uri})...")
         with httpx.Client(timeout=30.0) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
             logger.info("✅ YandexGPT ответил успешно")
-            return data["choices"][0]["message"]["content"].strip()
+            # Нативный API возвращает ответ в другой структуре
+            return data["result"]["alternatives"][0]["message"]["text"].strip()
     except httpx.HTTPStatusError as e:
         sys.stderr.write(f"🤖 YANDEX HTTP {e.response.status_code}: {e.response.text}\n")
         sys.stderr.flush()
-        return "⚠️ Ошибка генерации (код {e.response.status_code}). Проверь ключ или логи."
+        return f"⚠️ Ошибка генерации (код {e.response.status_code}). Проверь ключ, folder_id или логи."
     except Exception as e:
         sys.stderr.write(f"🤖 YANDEX ERROR: {type(e).__name__}: {e}\n")
         sys.stderr.flush()
