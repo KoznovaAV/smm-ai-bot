@@ -11,22 +11,25 @@ from openai import OpenAI
 
 load_dotenv()
 
-# Настройка логирования (гарантированно попадает в Render)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
 TOKEN = os.getenv("VK_TOKEN")
 CONFIRMATION_CODE = os.getenv("CONFIRMATION_CODE")
-YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "")
 
 if not YANDEX_API_KEY:
     logger.error("❌ YANDEX_API_KEY не найден в переменных среды Render!")
+else:
+    logger.info(f"🔑 Yandex ключ загружен (начало: {YANDEX_API_KEY[:6]}...)")
 
-# Клиент YandexGPT через OpenAI-совместимый API
+# 🔧 ФИКС АВТОРИЗАЦИИ: Yandex требует "Api-Key", а не "Bearer"
+# OpenAI SDK по умолчанию шлёт Bearer, что вызывает 404 на стороне Яндекса
 ai_client = OpenAI(
-    api_key=YANDEX_API_KEY,
-    base_url="https://llm.api.cloud.yandex.net/foundationModels/v1/openai/v1"
+    api_key="dummy",  # SDK требует непустое значение, но мы переопределим заголовок
+    base_url="https://llm.api.cloud.yandex.net/ffoundationModels/v1/openai/v1",
+    default_headers={"Authorization": f"Api-Key {YANDEX_API_KEY}"}
 )
 
 vk = VkApi(token=TOKEN)
@@ -40,7 +43,7 @@ def get_main_keyboard():
         "one_time": False, "inline": False,
         "buttons": [
             [{"action": {"type": "text", "label": "📝 Сгенерировать пост", "payload": json.dumps({"cmd":"generate"})}, "color": "primary"}],
-            [{"action": {"type": "text", "label": "#️⃣ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
+            [{"action": {"type": "text", "label": "#️ Хэштеги", "payload": json.dumps({"cmd":"hashtags"})}, "color": "secondary"},
              {"action": {"type": "text", "label": "⚙️ Настройки", "payload": json.dumps({"cmd":"settings"})}, "color": "default"}],
             [{"action": {"type": "text", "label": "👑 Премиум", "payload": json.dumps({"cmd":"premium"})}, "color": "positive"}]
         ]
@@ -54,7 +57,7 @@ def get_settings_keyboard(settings):
         }
 
     len_opts = [("🔹 Коротко", "set_len_short"), ("🔸 Средне", "set_len_medium"), ("🔺 Длинно", "set_len_long")]
-    emoji_opts = [(" Без", "set_emoji_off"), ("✨ Мало", "set_emoji_minimal"), ("🎨 Норма", "set_emoji_normal"), ("🌈 Много", "set_emoji_rich")]
+    emoji_opts = [("😶 Без", "set_emoji_off"), ("✨ Мало", "set_emoji_minimal"), ("🎨 Норма", "set_emoji_normal"), ("🌈 Много", "set_emoji_rich")]
     style_opts = [("👔 Строго", "set_style_strict"), ("😊 Легко", "set_style_casual"), ("📋 Список", "set_style_list"), ("📖 История", "set_style_story"), ("⚖️ Баланс", "set_style_balanced")]
 
     rows = [
@@ -106,7 +109,7 @@ def build_system_prompt(user_message, settings):
     return f"""Ты — senior SMM-редактор для ВКонтакте.
 ПОЛЬЗОВАТЕЛЬ НАПИСАЛ: "{user_message}"
 
- ТВОЯ ЗАДАЧА:
+🎯 ТВОЯ ЗАДАЧА:
 1. Понять суть запроса (тему, стиль, формат) из сообщения пользователя.
 2. Написать готовый пост строго по настройкам ниже.
 
@@ -150,7 +153,6 @@ def generate_ai_response(prompt: str, system_role: str) -> str:
         logger.info("✅ YandexGPT ответил успешно")
         return response.choices[0].message.content.strip()
     except Exception as e:
-        # Принудительный сброс в stderr (гарантированно видно в Render)
         sys.stderr.write(f"🤖 YANDEX ERROR: {type(e).__name__}: {e}\n")
         sys.stderr.flush()
         return "⚠️ Ошибка генерации. Попробуйте позже."
@@ -170,10 +172,10 @@ async def process_user_action(peer_id, text, payload_str):
     if cmd == "generate":
         ctx["state"] = "waiting"
         s = ctx["settings"]
-        send_message(peer_id, f"📝 Напишите тему или просто попросите: «сделай пост про...», «текст на тему...», «напиши историю про...».\n\n⚙️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
+        send_message(peer_id, f" Напишите тему или просто попросите: «сделай пост про...», «текст на тему...», «напиши историю про...».\n\n⚙️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
     elif cmd == "hashtags":
         ctx["state"] = "waiting_hash"
-        send_message(peer_id, "#️⃣ Напишите тему для хэштегов:", get_main_keyboard())
+        send_message(peer_id, "#️ Напишите тему для хэштегов:", get_main_keyboard())
     elif cmd == "premium":
         send_message(peer_id, "👑 Премиум в разработке. Скоро: аналитика, автопостинг, шаблоны.", get_main_keyboard())
     elif cmd == "settings":
