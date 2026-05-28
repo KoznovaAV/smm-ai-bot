@@ -28,7 +28,7 @@ if not YANDEX_FOLDER_ID:
 else:
     logger.info(f"✅ Yandex настроен: folder={YANDEX_FOLDER_ID[:10]}...")
 
-# 🔧 Инициализация официального SDK (правильная схема из документации)
+# Инициализация официального SDK
 ai_sdk = None
 if YANDEX_API_KEY and YANDEX_FOLDER_ID:
     try:
@@ -80,14 +80,18 @@ def get_settings_keyboard(settings):
 
 def clean_vk_text(text: str) -> str:
     if not text: return ""
+    # Удаляем Markdown
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
     text = re.sub(r'__(.+?)__', r'\1', text)
     text = re.sub(r'_(.+?)_', r'\1', text)
     text = re.sub(r'`(.+?)`', r'\1', text)
+    # Удаляем заголовки Markdown и цитаты
     text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
     text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
+    # Чистим остаточные символы
     text = text.replace('**', '').replace('__', '')
+    # Нормализуем переносы и пробелы
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r' +', ' ', text)
     return text.strip()
@@ -152,14 +156,12 @@ def generate_ai_response(prompt: str, system_role: str) -> str:
     try:
         logger.info("📡 Запрос к YandexGPT через AI Studio SDK...")
         
-        # 🔧 Правильное использование SDK из документации:
         model = ai_sdk.models.completions("yandexgpt")
         model = model.configure(
             temperature=0.4,
             max_tokens=900
         )
         
-        # Формируем сообщения в формате, который понимает SDK
         messages = [
             {"role": "system", "text": system_role},
             {"role": "user", "text": prompt}
@@ -167,7 +169,6 @@ def generate_ai_response(prompt: str, system_role: str) -> str:
         
         result = model.run(messages)
         
-        # Извлекаем текст из результата (по документации: result.alternatives[0].text)
         if result and result.alternatives and len(result.alternatives) > 0:
             logger.info("✅ YandexGPT ответил успешно")
             return result.alternatives[0].text.strip()
@@ -192,42 +193,70 @@ async def process_user_action(peer_id, text, payload_str):
         try: cmd = json.loads(payload_str).get("cmd")
         except: pass
 
+    # Кнопки главного меню
     if cmd == "generate":
         ctx["state"] = "waiting"
         s = ctx["settings"]
         send_message(peer_id, f"📝 Напишите тему или просто попросите: «сделай пост про...», «текст на тему...», «напиши историю про...».\n\n⚙️ Настройки:\n• {s['length']} | {s['emoji']} | {s['style']}", get_main_keyboard())
+    
     elif cmd == "hashtags":
         ctx["state"] = "waiting_hash"
-        send_message(peer_id, "#️⃣ Напишите тему для хэштегов:", get_main_keyboard())
+        # Исправлено: стабильный эмодзи вместо составного #️⃣
+        send_message(peer_id, "🔍 Напишите тему для подбора хэштегов:", get_main_keyboard())
+    
     elif cmd == "premium":
         send_message(peer_id, "👑 Премиум в разработке. Скоро: аналитика, автопостинг, шаблоны.", get_main_keyboard())
+    
     elif cmd == "settings":
         ctx["state"] = "settings"
         send_message(peer_id, "⚙️ Настройте параметры (кликните на нужное):", get_settings_keyboard(ctx["settings"]))
+    
     elif cmd == "back":
         ctx["state"] = "menu"
         send_message(peer_id, "🔙 Главное меню:", get_main_keyboard())
+    
+    # Прямое изменение настроек (фикс маппинга ключей)
     elif cmd and cmd.startswith("set_"):
         parts = cmd.split("_")
         if len(parts) == 3:
             _, param, value = parts
-            if param in ["len", "emoji", "style"]:
-                ctx["settings"][param] = value
-                send_message(peer_id, f"✅ Применено: {param} → {value}", get_settings_keyboard(ctx["settings"]))
+            key_map = {"len": "length", "emoji": "emoji", "style": "style"}
+            actual_key = key_map.get(param, param)
+            ctx["settings"][actual_key] = value
+            send_message(peer_id, f"✅ Применено: {actual_key} → {value}", get_settings_keyboard(ctx["settings"]))
+    
+    # 🔧 ИСПРАВЛЕНО: Обработка текстового ввода (правильный порядок if/elif)
     elif text:
+        text_clean = text.strip()
+        
+        # Состояние: ожидание темы для поста
         if ctx["state"] in ["waiting", "menu"]:
             ctx["state"] = "generating"
             send_message(peer_id, "⏳ Генерирую...", None)
-            prompt = build_system_prompt(text, ctx["settings"])
-            ai_text = generate_ai_response(text, prompt)
+            prompt = build_system_prompt(text_clean, ctx["settings"])
+            ai_text = generate_ai_response(text_clean, prompt)
             send_message(peer_id, ai_text, get_main_keyboard())
             ctx["state"] = "menu"
+        
+        # Состояние: ожидание темы для хэштегов (фикс: теперь внутри elif text)
         elif ctx["state"] == "waiting_hash":
-            sys_h = "12 релевантных хэштегов на русском. Только список через пробел. Без слов и объяснений."
-            send_message(peer_id, generate_ai_response(text, sys_h), get_main_keyboard())
+            sys_h = "Сгенерируй 15 релевантных хэштегов на русском. Формат: только хэштеги через пробел. Без текста, без приветствий, без пояснений. Строго начинай с #."
+            raw_response = generate_ai_response(text_clean, sys_h)
+            
+            # Оставляем ТОЛЬКО слова, начинающиеся с # (фильтр мусора)
+            clean_hashtags = re.findall(r'#[\wа-яА-ЯёЁ]+', raw_response)
+            final_hash = " ".join(clean_hashtags) if clean_hashtags else raw_response.strip()
+            
+            send_message(peer_id, final_hash, get_main_keyboard())
             ctx["state"] = "menu"
+        
+        # Неизвестное состояние
         else:
-            send_message(peer_id, "Выберите действие:", get_main_keyboard())
+            send_message(peer_id, "Выберите действие в меню:", get_main_keyboard())
+    
+    # Если нет текста и нет команды
+    else:
+        send_message(peer_id, "Выберите действие:", get_main_keyboard())
 
 # ================= РОУТЫ =================
 
